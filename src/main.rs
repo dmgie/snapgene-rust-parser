@@ -1,4 +1,4 @@
-use nom::{bytes::complete::take, IResult, number::complete::{be_u16, be_u32}};
+use nom::{bytes::complete::take, sequence::tuple, IResult, number::complete::{be_u16, be_u32}, multi::many0, branch::alt};
 
 // Each snapgene packet has a header (5 bytes, tag + length of packet) and then the data which can be of a few packet "types"
 #[derive(Debug, PartialEq)]
@@ -60,25 +60,27 @@ enum PacketType {
     Sequence = 0x00,
     Notes = 0x06,
     Feature = 0x0A,
+    Primer = 0x0B,
+    Other
 }
-
 
 impl PacketHeader {
     fn parse_header(input: &[u8]) -> IResult<&[u8], PacketHeader> {
         // Header is tag (1 byte) + length (4 bytes) in big endian (long)
         let (input, packet_tag) = take(1usize)(input)?;
         let (input, packet_length) = be_u32(input)?;
-
         let packet_header = PacketHeader {
             packet_tag: match packet_tag[0] {
                 0x00 => PacketType::Sequence,
                 0x06 => PacketType::Notes,
                 0x09 => PacketType::Cookie,
                 0x0A => PacketType::Feature,
-                _ => panic!("Unknown packet type: byte = {:?}", packet_tag[0]),
+                0x0B => PacketType::Primer,
+                _ => PacketType::Other,
+                // _ => panic!("Unknown packet type: byte = {:?}", packet_tag[0]),
             },
             // Convert to u32
-            packet_length: packet_length,
+            packet_length
         };
 
         Ok((input, packet_header))
@@ -97,9 +99,7 @@ impl CookiePacket {
         // Parse the packet header (first 5 bytes), and then the rest of the cookie
         let (input, packet_header) = PacketHeader::parse_header(input)?;
         let (input, magic_cookie) = take(8usize)(input)?;
-        let (input, seq_type) = take(2usize)(input)?;
-        // let (input, export_version) = take(2usize)(input)?;
-        // let (input, import_version) = take(2usize)(input)?;
+        let (input, seq_type) = be_u16(input)?; // (or take(2usize) and then convert to u16 manually)
         let (input, export_version) = be_u16(input)?;
         let (input, import_version) = be_u16(input)?;
 
@@ -107,7 +107,7 @@ impl CookiePacket {
         let cookie_packet = CookiePacket {
             packet_header,
             magic_cookie: magic_cookie.try_into().unwrap(),
-            seq_type: match u16::from_be_bytes(seq_type.try_into().unwrap()) {
+            seq_type: match seq_type {
                 1 => SeqType::DNA,
                 2 => SeqType::RNA,
                 3 => SeqType::Protein,
@@ -120,6 +120,7 @@ impl CookiePacket {
         Ok((input, cookie_packet))
     }
 }
+
 
 impl SequencePacket {
     fn parse_dnapacket(input: &[u8]) -> IResult<&[u8], SequencePacket> {
@@ -147,11 +148,12 @@ impl SequencePacket {
 
 fn main() {
     let f = std::fs::read("./pcDNA4 TO.dna").unwrap();
-    // let (input, cookie_packet) = CookiePacket::parse_cookie(&f).unwrap();
-    // let (input, sequence) = SequencePacket::parse_dnapacket(input).unwrap();
-    // let sequence = String::from_utf8(sequence.seq).unwrap();
 
-    // Repeatedly parse the input until we get to the end, using the various parsers
+    // Cookie and sequence only happen, parse them first
+    let (input, (cookie_packet, sequence)) = tuple((CookiePacket::parse_cookie, SequencePacket::parse_dnapacket))(&f).unwrap();
+    println!("{input:?}", );
 
-
+    // Parse the rest of the packets
+    let (input, packets) = many0(PacketHeader::parse_header)(input).unwrap();
+    println!("{packets:?}", );
 }
