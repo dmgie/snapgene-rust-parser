@@ -1,20 +1,9 @@
-use nom::{
-    branch::{alt, permutation},
-    bytes::complete::take,
-    multi::{length_data, length_value, many0},
-    number::complete::{be_u16, be_u32},
-    sequence::tuple,
-    IResult,
-};
+use nom::{bytes::complete::take, sequence::tuple, IResult, number::complete::{be_u16, be_u32}, multi::many0, branch::alt};
 
-/// TODO: Rewrite it to be a lot simpler
-/// Maybe initially forgo the enums and structs and just parse the data with functions
+/// TODO:
 
 // Each snapgene packet has a header (5 bytes, tag + length of packet) and then the data which can be of a few packet "types"
-
 #[derive(Debug, PartialEq)]
-struct SnapGene;
-
 struct SnapgenePacket {
     packet_header: PacketHeader,
     packet_data: PacketTypes,
@@ -24,7 +13,7 @@ struct SnapgenePacket {
 enum PacketTypes {
     Cookie(CookiePacket),
     Sequence(SequencePacket),
-    Notes(NotesPacket),
+    // Notes(NotesPacket),
     // Feature(FeaturePacket),
     // Primer(PrimerPacket),
 }
@@ -55,28 +44,6 @@ struct SequencePacket {
 }
 
 #[derive(Debug, PartialEq)]
-struct NotesPacket {
-    packet_header: PacketHeader,
-    data: Vec<u8>,
-}
-
-impl NotesPacket {
-    fn parse_notes(input: &[u8]) -> IResult<&[u8], Vec<u8>> {
-        // Parse the packet header
-        let (input, packet_header) = PacketHeader::parse_header(input)?;
-        let (input, data) = take(packet_header.packet_length)(input)?;
-
-        let combined = [data].concat();
-
-        // Set the values
-        let snap_parser = NotesPacket {
-            packet_header,
-            data: data.to_vec(),
-        };
-        Ok((input, combined))
-    }
-}
-#[derive(Debug, PartialEq)]
 enum SequenceTopology {
     Linear = 0x00, // Absent flag = linear
     Circular,      // Otherwise circular
@@ -96,14 +63,14 @@ enum PacketType {
     Notes = 0x06,
     Feature = 0x0A,
     Primer = 0x0B,
-    Other,
+    Other
 }
 
 impl PacketHeader {
     fn parse_header(input: &[u8]) -> IResult<&[u8], PacketHeader> {
         // Header is tag (1 byte) + length (4 bytes) in big endian (long)
-        let (input, (packet_tag, packet_length)) = tuple((take(1usize), be_u32))(input)?;
-
+        let (input, packet_tag) = take(1usize)(input)?;
+        let (input, packet_length) = be_u32(input)?;
         let packet_header = PacketHeader {
             packet_tag: match packet_tag[0] {
                 0x00 => PacketType::Sequence,
@@ -114,17 +81,14 @@ impl PacketHeader {
                 _ => PacketType::Other,
                 // _ => panic!("Unknown packet type: byte = {:?}", packet_tag[0]),
             },
-            packet_length,
+            // Convert to u32
+            packet_length
         };
-        // If packet type is other, remove the number of bytes from input
-        if let PacketType::Other = packet_header.packet_tag {
-            let (input, _) = take(packet_header.packet_length)(input)?;
-            return Ok((input, packet_header));
-        }
 
         Ok((input, packet_header))
     }
 }
+
 
 // This is a binary parser
 impl CookiePacket {
@@ -152,23 +116,22 @@ impl CookiePacket {
                 _ => panic!("Unknown sequence type"),
             },
             export_version,
-            import_version,
+            import_version
         };
 
         Ok((input, cookie_packet))
     }
 }
 
+
 impl SequencePacket {
-    fn parse_dnapacket(input: &[u8]) -> IResult<&[u8], Vec<u8>> {
+    fn parse_dnapacket(input: &[u8]) -> IResult<&[u8], SequencePacket> {
         // Parse the packet header
         let (input, packet_header) = PacketHeader::parse_header(input)?;
         let (input, sequence_flag) = take(1usize)(input)?;
-
         // Sequence length is packet length - 1 (due to sequence flag)
         let length = packet_header.packet_length - 1;
         let (input, seq) = take(length as usize)(input)?;
-        let combined = [sequence_flag, seq].concat();
 
         // Set the values
         let snap_parser = SequencePacket {
@@ -177,33 +140,22 @@ impl SequencePacket {
                 0x00 => SequenceTopology::Linear,
                 _ => SequenceTopology::Circular,
             },
-            seq: String::from_utf8(seq.to_vec()).unwrap().into_bytes(),
+            seq: seq.to_vec(),
         };
-        Ok((input, combined))
+
+        Ok((input, snap_parser))
     }
 }
 
-impl SnapGene {
-    fn parse(input: &[u8]) -> IResult<&[u8], SnapGene> {
-        let (input, cookie) = CookiePacket::parse_cookie(input).unwrap();
-
-        // The rest of the inputs can be the any of the PacketTypes in any order, so we need to parse them all
-        let (input, packets) = many0(alt((
-            SequencePacket::parse_dnapacket,
-            NotesPacket::parse_notes,
-        )))(input)
-        .unwrap();
-
-        println!("{:?}", packets);
-
-        Ok((input, SnapGene))
-    }
-}
 
 fn main() {
     let f = std::fs::read("./pcDNA4 TO.dna").unwrap();
 
-    // Cookie packet is always first
+    // Cookie and sequence only happen, parse them first
+    let (input, (cookie_packet, sequence)) = tuple((CookiePacket::parse_cookie, SequencePacket::parse_dnapacket))(&f).unwrap();
+    println!("{input:?}", );
+
     // Parse the rest of the packets
-    let (input, snapgene) = SnapGene::parse(&f).unwrap();
+    let (input, packets) = many0(PacketHeader::parse_header)(input).unwrap();
+    println!("{packets:?}", );
 }
